@@ -15,6 +15,7 @@ import os
 from services.logger_service import get_logger
 
 logger = get_logger("PrintService")
+TZ_LOCAL = datetime.timezone(datetime.timedelta(hours=5))
 
 FONT_NAME = "Helvetica"
 BOLD_FONT_NAME = "Helvetica-Bold"
@@ -40,6 +41,13 @@ def _setup_fonts():
                 else:
                     BOLD_FONT_NAME = name
                 FONT_NAME = name
+                pdfmetrics.registerFontFamily(
+                    FONT_NAME,
+                    normal=FONT_NAME,
+                    bold=BOLD_FONT_NAME,
+                    italic=FONT_NAME,
+                    boldItalic=BOLD_FONT_NAME,
+                )
                 logger.info(f"Зарегистрирован кириллический шрифт для PDF: {FONT_NAME}")
                 return
             except Exception as e:
@@ -191,7 +199,7 @@ def generate_equipment_act(
     story.append(HRFlowable(width="100%", thickness=1, color=colors.HexColor("#0f172a"), spaceAfter=12))
 
     # 2. Название документа
-    now_dt = datetime.datetime.now()
+    now_dt = datetime.datetime.now(TZ_LOCAL)
     current_date = now_dt.strftime("%d.%m.%Y")
     ru_month = RU_MONTHS.get(now_dt.month, now_dt.strftime("%m"))
     act_num = now_dt.strftime("%Y%m%d") + "-" + xml_escape(str(user_details.get("username", "001"))[:8].upper())

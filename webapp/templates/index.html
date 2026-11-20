@@ -6,8 +6,6 @@
     <title>Testarossa · HelpDesk Control</title>
     <!-- Telegram WebApp SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
         :root {
             /* Surfaces */
@@ -634,6 +632,12 @@
             if (tg.setBackgroundColor) tg.setBackgroundColor('#090d16');
         }
 
+        function refreshIcons() {
+            if (window.lucide && typeof window.lucide.createIcons === 'function') {
+                window.refreshIcons();
+            }
+        }
+
         function apiFetch(url, options = {}) {
             const headers = new Headers(options.headers || {});
             if (tg && tg.initData) {
@@ -658,7 +662,7 @@
             } catch (e) {
                 console.error('Stats error:', e);
             }
-            lucide.createIcons();
+            refreshIcons();
             showInitialHelp();
         }
 
@@ -671,7 +675,7 @@
                     <div style="font-size:13px; color:var(--text-muted);">Введите фамилию, логин или имя ПК для мгновенной карточки</div>
                 </div>
             `;
-            lucide.createIcons();
+            refreshIcons();
         }
 
         function switchTab(tab, ev) {
@@ -693,7 +697,7 @@
                 document.getElementById('searchInput').value = '';
                 showInitialHelp();
             }
-            lucide.createIcons();
+            refreshIcons();
         }
 
         function onSearchInput() {
@@ -726,7 +730,7 @@
                             <div style="font-size:13px; color:var(--text-muted);">По запросу "${escapeHtml(query)}" совпадений нет</div>
                         </div>
                     `;
-                    lucide.createIcons();
+                    refreshIcons();
                     return;
                 }
 
@@ -739,7 +743,7 @@
                 loader.style.display = 'none';
                 feed.innerHTML = `<div class="empty-placeholder" style="color:var(--rose);">Ошибка соединения с контроллером</div>`;
             }
-            lucide.createIcons();
+            refreshIcons();
         }
 
         function renderUserCards(users) {
@@ -829,7 +833,7 @@
                     </div>
                 </div>
             `).join('');
-            lucide.createIcons();
+            refreshIcons();
         }
 
         function renderPCCards(pcs) {
@@ -889,7 +893,7 @@
                     ` : ''}
                 </div>
             `).join('');
-            lucide.createIcons();
+            refreshIcons();
         }
 
         function renderToolsFeed() {
@@ -935,7 +939,7 @@
                     </button>
                 </div>
             `;
-            lucide.createIcons();
+            refreshIcons();
         }
 
         /* ACTIONS */
@@ -943,21 +947,21 @@
             haptic('medium');
             openModal('Поиск ПК сотрудника', '<div class="plain-spinner"></div><div style="text-align:center; color:var(--text-muted);">Опрос активных сессий в домене...</div>');
             try {
-                const res = await apiFetch(`/api/user/${username}/pc`);
+                const res = await apiFetch(`/api/user/${encodeURIComponent(username)}/pc`);
                 const data = await res.json();
                 if (data.ok && data.pc_name) {
                     haptic('success');
                     openModal('Рабочее место найдено', `
                         <div style="background:var(--bg-inner); border: 1px solid var(--border); border-radius:10px; padding:12px;">
-                            <div><b>Сотрудник:</b> <code>${username}</code></div>
-                            <div style="margin-top:6px;"><b>Компьютер:</b> <span style="color:var(--blue); font-size:15px; font-weight:700;">${data.pc_name}</span></div>
-                            <div style="margin-top:4px;"><b>FQDN:</b> <code>${data.dns_name}</code></div>
+                            <div><b>Сотрудник:</b> <code>${escapeHtml(username)}</code></div>
+                            <div style="margin-top:6px;"><b>Компьютер:</b> <span style="color:var(--blue); font-size:15px; font-weight:700;">${escapeHtml(data.pc_name)}</span></div>
+                            <div style="margin-top:4px;"><b>FQDN:</b> <code>${escapeHtml(data.dns_name)}</code></div>
                             <div style="margin-top:8px; color:var(--emerald); font-weight:600;">В сети (активная сессия)</div>
                         </div>
                     `);
                 } else {
                     haptic('error');
-                    openModal('ПК не найден', `Сотрудник <code>${username}</code> в данный момент не залогинен ни на одной машине домена.`);
+                    openModal('ПК не найден', `Сотрудник <code>${escapeHtml(username)}</code> в данный момент не залогинен ни на одной машине домена.`);
                 }
             } catch (e) {
                 openModal('Ошибка', 'Сбой сетевого запроса.');
@@ -968,13 +972,13 @@
             haptic('medium');
             if (!confirm(`Сбросить пароль сотрудника ${username} на ASDfg123+?`)) return;
             try {
-                const res = await apiFetch(`/api/user/${username}/reset_password`, { method: 'POST' });
+                const res = await apiFetch(`/api/user/${encodeURIComponent(username)}/reset_password`, { method: 'POST' });
                 const data = await res.json();
                 if (data.ok) {
                     haptic('success');
                     openModal('Пароль сброшен', `
-                        Пароль сотрудника <code>${username}</code> успешно обновлен в Active Directory.<br><br>
-                        <b>Временный пароль:</b> <code>${data.password}</code>
+                        Пароль сотрудника <code>${escapeHtml(username)}</code> успешно обновлен в Active Directory.<br><br>
+                        <b>Временный пароль:</b> <code>${escapeHtml(data.password)}</code>
                     `);
                 } else {
                     haptic('error');
@@ -988,11 +992,11 @@
         async function unlockUser(username) {
             haptic('medium');
             try {
-                const res = await apiFetch(`/api/user/${username}/unlock`, { method: 'POST' });
+                const res = await apiFetch(`/api/user/${encodeURIComponent(username)}/unlock`, { method: 'POST' });
                 const data = await res.json();
                 if (data.ok) {
                     haptic('success');
-                    openModal('Разблокировано', `Учетная запись <code>${username}</code> разблокирована в AD.`);
+                    openModal('Разблокировано', `Учетная запись <code>${escapeHtml(username)}</code> разблокирована в AD.`);
                 } else {
                     haptic('error');
                     openModal('Ошибка', 'Не удалось разблокировать пользователя.');
@@ -1006,11 +1010,11 @@
             haptic('medium');
             if (!confirm(`Переместить ${username} в OU=notebooklenovo для сертификата?`)) return;
             try {
-                const res = await apiFetch(`/api/user/${username}/cert`, { method: 'POST' });
+                const res = await apiFetch(`/api/user/${encodeURIComponent(username)}/cert`, { method: 'POST' });
                 const data = await res.json();
                 if (data.ok) {
                     haptic('success');
-                    openModal('Перемещение выполнено', `Сотрудник <code>${username}</code> перемещён в <code>notebooklenovo</code>. После выгрузки сертификата нажмите "Вернуть OU".`);
+                    openModal('Перемещение выполнено', `Сотрудник <code>${escapeHtml(username)}</code> перемещён в <code>notebooklenovo</code>. После выгрузки сертификата нажмите "Вернуть OU".`);
                 } else {
                     openModal('Ошибка', 'Не удалось переместить пользователя.');
                 }
@@ -1022,13 +1026,13 @@
         async function revertUserOU(username) {
             haptic('medium');
             try {
-                const res = await apiFetch(`/api/user/${username}/revert`, { method: 'POST' });
+                const res = await apiFetch(`/api/user/${encodeURIComponent(username)}/revert`, { method: 'POST' });
                 const data = await res.json();
                 if (data.ok) {
                     haptic('success');
-                    openModal('Возврат завершен', `Сотрудник <code>${username}</code> успешно возвращён в исходный OU:<br><br><code>${data.original_ou}</code>`);
+                    openModal('Возврат завершен', `Сотрудник <code>${escapeHtml(username)}</code> успешно возвращён в исходный OU:<br><br><code>${escapeHtml(data.original_ou)}</code>`);
                 } else {
-                    openModal('Внимание', data.error || 'Исходный OU не найден в базе данных бота.');
+                    openModal('Внимание', escapeHtml(data.error || 'Исходный OU не найден в базе данных бота.'));
                 }
             } catch (e) {
                 openModal('Ошибка', 'Сбой возврата.');
@@ -1039,11 +1043,11 @@
             haptic('medium');
             if (!confirm(`Переместить ПК ${pcName} в KDB notebooklenovo?`)) return;
             try {
-                const res = await apiFetch(`/api/pc/${pcName}/move`, { method: 'POST' });
+                const res = await apiFetch(`/api/pc/${encodeURIComponent(pcName)}/move`, { method: 'POST' });
                 const data = await res.json();
                 if (data.ok) {
                     haptic('success');
-                    openModal('Компьютер перемещен', `ПК <code>${pcName}</code> успешно перемещён в целевое подразделение ноутбуков.`);
+                    openModal('Компьютер перемещен', `ПК <code>${escapeHtml(pcName)}</code> успешно перемещён в целевое подразделение ноутбуков.`);
                 } else {
                     openModal('Ошибка', 'Не удалось переместить компьютер.');
                 }
@@ -1060,11 +1064,11 @@
 
         async function deletePC(pcName) {
             try {
-                const res = await apiFetch(`/api/pc/${pcName}/delete`, { method: 'POST' });
+                const res = await apiFetch(`/api/pc/${encodeURIComponent(pcName)}/delete`, { method: 'POST' });
                 const data = await res.json();
                 if (data.ok) {
                     haptic('success');
-                    openModal('Удалено', `Компьютер <code>${pcName}</code> удален из домена.`);
+                    openModal('Удалено', `Компьютер <code>${escapeHtml(pcName)}</code> удален из домена.`);
                     onSearchInput();
                 } else {
                     openModal('Ошибка', 'Не удалось удалить компьютер из AD.');
@@ -1087,11 +1091,12 @@
                 const data = await res.json();
                 if (data.ok && data.meeting) {
                     haptic('success');
+                    const safeUrl = /^https?:\/\//i.test(String(data.meeting.join_url || '')) ? escapeHtml(data.meeting.join_url) : '#';
                     openModal('Zoom-конференция готова', `
                         <div><b>Тема:</b> ${escapeHtml(topic)}</div>
                         <div style="margin-top:6px;"><b>Пароль:</b> <code>${escapeHtml(data.meeting.password)}</code></div>
                         <div style="margin-top:14px;">
-                            <a href="${data.meeting.join_url}" target="_blank" class="act-btn act-btn-indigo" style="display:block; text-decoration:none; text-align:center; padding:12px;">Войти в комнату Zoom</a>
+                            <a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="act-btn act-btn-indigo" style="display:block; text-decoration:none; text-align:center; padding:12px;">Войти в комнату Zoom</a>
                         </div>
                     `);
                 } else {
@@ -1122,12 +1127,13 @@
         }
 
         function escapeHtml(str) {
-            if (!str) return '—';
+            if (str === null || str === undefined || str === '') return '—';
             return String(str)
                 .replace(/&/g, '&amp;')
-                .replace(/&lt;/g, '&lt;')
+                .replace(/</g, '&lt;')
                 .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;');
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
         }
 
         initDashboard();

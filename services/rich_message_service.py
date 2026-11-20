@@ -1,11 +1,18 @@
+import asyncio
 from html import escape
 import math
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.types import InputRichMessage, Message
 
 from services.logger_service import get_logger
 
 logger = get_logger("RichMessageService")
+
+_FALLBACK_EDIT_ERRORS = (
+    "message can't be edited",
+    "message to edit not found",
+    "there is no text in the message to edit",
+)
 
 
 def html_text(value) -> str:
@@ -20,27 +27,39 @@ def rich_message(html: str) -> InputRichMessage:
 
 async def send_rich(message: Message, html: str) -> Message:
     """Send a native Rich Message to the current chat."""
-    return await message.bot.send_rich_message(
-        chat_id=message.chat.id,
-        rich_message=rich_message(html),
-        message_thread_id=getattr(message, "message_thread_id", None),
-    )
+    try:
+        return await message.bot.send_rich_message(
+            chat_id=message.chat.id,
+            rich_message=rich_message(html),
+            message_thread_id=getattr(message, "message_thread_id", None),
+        )
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(min(float(e.retry_after), 10.0))
+        return await message.bot.send_rich_message(
+            chat_id=message.chat.id,
+            rich_message=rich_message(html),
+            message_thread_id=getattr(message, "message_thread_id", None),
+        )
 
 
 async def edit_rich(message: Message, html: str):
     """Replace the contents of the same message with a new Rich Message."""
     try:
         return await message.edit_text(rich_message=rich_message(html), parse_mode=None)
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(min(float(e.retry_after), 10.0))
+        return await message.edit_text(rich_message=rich_message(html), parse_mode=None)
     except TelegramBadRequest as error:
         err_lower = str(error).lower()
         if "message is not modified" in err_lower:
             return message
-        if "message can't be edited" not in err_lower:
+        if not any(marker in err_lower for marker in _FALLBACK_EDIT_ERRORS):
             raise
         logger.warning(
-            "Rich message %s in chat %s is not editable; sending updated card instead",
+            "Rich message %s in chat %s is not editable (%s); sending updated card instead",
             message.message_id,
             message.chat.id if message.chat else "unknown",
+            err_lower,
         )
         return await send_rich(message, html)
 
@@ -54,32 +73,58 @@ async def edit_rich_by_ids(bot, chat_id: int | str, message_id: int, html: str):
             rich_message=rich_message(html),
             parse_mode=None,
         )
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(min(float(e.retry_after), 10.0))
+        return await bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            rich_message=rich_message(html),
+            parse_mode=None,
+        )
     except TelegramBadRequest as error:
         err_lower = str(error).lower()
         if "message is not modified" in err_lower:
             return None
-        if "message can't be edited" not in err_lower:
+        if not any(marker in err_lower for marker in _FALLBACK_EDIT_ERRORS):
             raise
         logger.warning(
-            "Rich message %s in chat %s is not editable; sending updated card instead",
+            "Rich message %s in chat %s is not editable (%s); sending updated card instead",
             message_id,
             chat_id,
+            err_lower,
         )
         return await send_rich_to_chat(bot, chat_id, html)
 
 
 async def send_rich_to_chat(bot, chat_id: int | str, html: str):
     """Send a native Rich Message when there is no incoming Message object."""
-    return await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(html))
+    try:
+        return await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(html))
+    except TelegramRetryAfter as e:
+        await asyncio.sleep(min(float(e.retry_after), 10.0))
+        return await bot.send_rich_message(chat_id=chat_id, rich_message=rich_message(html))
+
+
+def _trim_callback_data(data: str, max_bytes: int = 64) -> str:
+    raw = data.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return data
+    trimmed = raw[:max_bytes]
+    while True:
+        try:
+            return trimmed.decode("utf-8")
+        except UnicodeDecodeError:
+            trimmed = trimmed[:-1]
 
 
 def callback_button(label: str, data: str, style: str = "primary") -> str:
-    """Build a callback button with escaped visible label and payload."""
-    if not data or len(data.encode("utf-8")) > 64:
-        raise ValueError("Telegram callback_data must be 1-64 UTF-8 bytes")
+    """Build a callback button with escaped visible label and payload (<= 64 UTF-8 bytes)."""
+    if not data:
+        raise ValueError("Telegram callback_data must be non-empty")
+    safe_data = _trim_callback_data(data, 64)
     return (
         f'<tg-button type="callback_data" style="{style}" '
-        f'data="{html_text(data)}">{html_text(label)}</tg-button>'
+        f'data="{html_text(safe_data)}">{html_text(label)}</tg-button>'
     )
 
 

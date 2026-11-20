@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import sys
+import time
 from urllib.parse import parse_qsl
 
 # Добавляем корень проекта в sys.path
@@ -12,19 +13,26 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import config
 from aiohttp import web
 from services.ad_service import ad_service
-from services.db_service import get_user_pc_session, save_original_ou, get_original_ou, remove_original_ou
+from services.db_service import (
+    get_original_ou,
+    get_user_pc_session,
+    log_audit_action,
+    remove_original_ou,
+    save_original_ou,
+)
 from services.pc_monitor_service import check_pc_online, get_pc_logged_user, find_pc_by_username_scan
 from services.zoom_service import zoom_service
 from services.logger_service import get_logger
 
 logger = get_logger("WebAppServer")
 
-TARGET_PC_OU = "OU=KDB notebooklenovo,OU=KDB Nout,DC=kdb,DC=kz"
-CERT_USER_OU = "OU=notebooklenovo,OU=Bank Divisions,OU=KDB Users,DC=kdb,DC=kz"
+TARGET_PC_OU = config.TARGET_PC_MOVE_OU
+CERT_USER_OU = config.CERT_USER_OU
+INIT_DATA_MAX_AGE_SEC = 300
 
 
 def verify_telegram_init_data(init_data: str, bot_token: str | None = None) -> dict | None:
-    """Проверяет подпись X-Telegram-Init-Data по алгоритму Telegram WebApp (HMAC-SHA256) и членство в ADMIN_IDS."""
+    """Проверяет подпись X-Telegram-Init-Data по алгоритму Telegram WebApp (HMAC-SHA256), свежесть auth_date и членство в ADMIN_IDS."""
     token = (bot_token if bot_token is not None else getattr(config, "BOT_TOKEN", "")) or ""
     token = token.strip()
     if not init_data or not token:
@@ -33,6 +41,13 @@ def verify_telegram_init_data(init_data: str, bot_token: str | None = None) -> d
         parsed = dict(parse_qsl(init_data, keep_blank_values=True))
         received_hash = parsed.pop("hash", None)
         if not received_hash:
+            return None
+        auth_date_raw = parsed.get("auth_date")
+        if auth_date_raw is not None:
+            auth_date = int(auth_date_raw)
+            if auth_date <= 0 or abs(time.time() - auth_date) > INIT_DATA_MAX_AGE_SEC:
+                return None
+        else:
             return None
         data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(parsed.items()))
         secret_key = hmac.new(b"WebAppData", token.encode("utf-8"), hashlib.sha256).digest()
@@ -53,13 +68,28 @@ def verify_telegram_init_data(init_data: str, bot_token: str | None = None) -> d
 
 
 def verify_api_token(api_token: str) -> bool:
-    """Проверяет заголовок X-API-Token на совпадение с WEBAPP_API_TOKEN (или BOT_TOKEN, если WEBAPP_API_TOKEN не задан)."""
+    """Проверяет заголовок X-API-Token на совпадение с WEBAPP_API_TOKEN (без отката на BOT_TOKEN)."""
     if not api_token:
         return False
-    expected = (getattr(config, "WEBAPP_API_TOKEN", "") or os.getenv("WEBAPP_API_TOKEN", "") or getattr(config, "BOT_TOKEN", "") or "").strip()
+    expected = (getattr(config, "WEBAPP_API_TOKEN", "") or os.getenv("WEBAPP_API_TOKEN", "") or "").strip()
     if not expected:
         return False
     return hmac.compare_digest(api_token.strip(), expected)
+
+
+async def _audit_webapp(request: web.Request, action: str, target: str, ok: bool, details: str | None = None):
+    tg_user = request.get("tg_user") or {}
+    admin_id = int(tg_user.get("id", 0) or 0)
+    admin_username = tg_user.get("username") or tg_user.get("first_name") or "webapp_api_token"
+    await asyncio.to_thread(
+        log_audit_action,
+        admin_id,
+        admin_username,
+        f"[WebApp] {action}",
+        target,
+        "SUCCESS" if ok else "FAILURE",
+        details,
+    )
 
 
 @web.middleware
@@ -177,13 +207,15 @@ async def api_reset_password(request):
     """Сброс пароля"""
     username = request.match_info.get("username", "").strip()
     fixed_password = "ASDfg123+"
-    success = await asyncio.to_thread(ad_service.reset_password, username, fixed_password)
-    return web.json_response({"ok": success, "password": fixed_password})
+    success = await asyncio.to_thread(ad_service.reset_password, username, fixed_password, True, True)
+    await _audit_webapp(request, "Сброс пароля", username, success)
+    return web.json_response({"ok": success, "password": fixed_password if success else None})
 
 async def api_unlock_user(request):
     """Разблокировка пользователя"""
     username = request.match_info.get("username", "").strip()
     success = await asyncio.to_thread(ad_service.unlock_user, username)
+    await _audit_webapp(request, "Разблокировка УЗ", username, success)
     return web.json_response({"ok": success})
 
 async def api_move_user_cert(request):
@@ -191,12 +223,18 @@ async def api_move_user_cert(request):
     username = request.match_info.get("username", "").strip()
     details = await asyncio.to_thread(ad_service.get_user_details, username)
     if not details:
+        await _audit_webapp(request, "Перемещение в Cert OU", username, False, "User not found")
         return web.json_response({"ok": False, "error": "User not found"})
-    
+
+    if CERT_USER_OU.lower() in details["dn"].lower():
+        await _audit_webapp(request, "Перемещение в Cert OU", username, True, "Already in Cert OU")
+        return web.json_response({"ok": True, "already_in_cert_ou": True, "target_ou": CERT_USER_OU})
+
     original_ou = ",".join(details["dn"].split(",")[1:])
     success = await asyncio.to_thread(ad_service.move_user, details["dn"], CERT_USER_OU)
     if success:
         await asyncio.to_thread(save_original_ou, username, original_ou)
+    await _audit_webapp(request, "Перемещение в Cert OU", username, success)
     return web.json_response({"ok": success, "target_ou": CERT_USER_OU})
 
 async def api_revert_user(request):
@@ -204,34 +242,45 @@ async def api_revert_user(request):
     username = request.match_info.get("username", "").strip()
     original_ou = await asyncio.to_thread(get_original_ou, username)
     if not original_ou:
+        await _audit_webapp(request, "Возврат из Cert OU", username, False, "No original OU")
         return web.json_response({"ok": False, "error": "No original OU found"})
     
     details = await asyncio.to_thread(ad_service.get_user_details, username)
     if not details:
+        await _audit_webapp(request, "Возврат из Cert OU", username, False, "User not found")
         return web.json_response({"ok": False, "error": "User not found"})
 
     success = await asyncio.to_thread(ad_service.move_user, details["dn"], original_ou)
     if success:
         await asyncio.to_thread(remove_original_ou, username)
+    await _audit_webapp(request, "Возврат из Cert OU", username, success)
     return web.json_response({"ok": success, "original_ou": original_ou})
 
 async def api_move_pc(request):
     """Перемещение ПК в целевое OU ноутбуков"""
     pc_name = request.match_info.get("name", "").strip()
     success = await asyncio.to_thread(ad_service.move_computer, pc_name, TARGET_PC_OU)
+    await _audit_webapp(request, "Перемещение ПК", f"{pc_name} -> {TARGET_PC_OU}", success)
     return web.json_response({"ok": success, "target_ou": TARGET_PC_OU})
 
 async def api_delete_pc(request):
     """Удаление ПК из домена"""
     pc_name = request.match_info.get("name", "").strip()
     success = await asyncio.to_thread(ad_service.delete_computer, pc_name)
+    await _audit_webapp(request, "Удаление ПК из домена", pc_name, success)
     return web.json_response({"ok": success})
 
 async def api_create_zoom(request):
     """Создание Zoom встречи"""
-    data = await request.json() if request.can_read_body else {}
-    topic = data.get("topic", "Техподдержка AD")
+    try:
+        data = await request.json() if request.can_read_body else {}
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        return web.json_response({"ok": False, "error": "Invalid JSON body"}, status=400)
+    topic = str(data.get("topic") or "Техподдержка AD").strip()
     meeting = await zoom_service.create_meeting(topic=topic)
+    await _audit_webapp(request, "Создание Zoom встречи", topic, bool(meeting))
     if meeting:
         return web.json_response({"ok": True, "meeting": meeting})
     return web.json_response({"ok": False, "error": "Failed to create meeting"})

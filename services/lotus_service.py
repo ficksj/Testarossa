@@ -11,6 +11,7 @@ except ImportError:
 
 import config
 from services.db_service import (
+    delete_lotus_transfer,
     get_lotus_transfer_by_id,
     mark_lotus_returned,
     save_lotus_transfer,
@@ -359,7 +360,9 @@ def delete_storage_copy(transfer_id: int) -> dict:
         _ensure_session(storage_server, config.LOTUS_STORAGE_USER, config.LOTUS_STORAGE_PASSWORD, timeout=5)
         if smbclient.path.isfile(target_path):
             smbclient.remove(target_path)
+            delete_lotus_transfer(transfer_id)
             return {"ok": True, "deleted": True, "path": target_path}
+        delete_lotus_transfer(transfer_id)
         return {"ok": True, "deleted": False, "path": target_path}
     except Exception as e:
         _, human = _classify_smb_error(e)

@@ -1,6 +1,8 @@
+import asyncio
 from aiogram import Bot
 from aiogram.types import User
 import config
+from services.db_service import log_audit_action
 from services.logger_service import get_logger
 from services.rich_message_service import (
     html_text,
@@ -10,9 +12,19 @@ from services.rich_message_service import (
 
 logger = get_logger("AuditService")
 
-async def send_audit_log(bot: Bot, admin: User, action: str, target: str, status: bool = True):
+async def send_audit_log(bot: Bot, admin: User, action: str, target: str, status: bool = True, details: str | None = None):
+    await asyncio.to_thread(
+        log_audit_action,
+        admin.id,
+        admin.username or admin.full_name,
+        action,
+        target,
+        "SUCCESS" if status else "FAILURE",
+        details,
+    )
+
     if not config.LOG_CHAT_ID:
-        logger.warning("LOG_CHAT_ID не задан в .env, аудит-лог пропущен.")
+        logger.warning("LOG_CHAT_ID не задан в .env, отправка в Telegram-чат пропущена.")
         return
 
     status_str = "✅ УСПЕШНО" if status else "❌ ОШИБКА"

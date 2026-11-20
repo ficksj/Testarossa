@@ -33,7 +33,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 def _lotus_error_hint(error_code: str | None, error_text: str | None) -> str:
-    base = html_text(error_text or "Неизвестная ошибка SMB.")
+    base = error_text or "Неизвестная ошибка SMB."
     if error_code == "access_denied":
         return (
             f"{base}\n💡 <i>Подсказка:</i> Учетная запись <code>{html_text(config.PC_ADMIN_USER)}</code> "
@@ -346,7 +346,11 @@ async def _perform_extract(callback: CallbackQuery, idx: int, storage_filename: 
 
 @router.callback_query(F.data.startswith("lotus:pick:"))
 async def pick_lotus_file(callback: CallbackQuery, state: FSMContext):
-    idx = int(callback.data.split(":", 2)[2])
+    try:
+        idx = int(callback.data.split(":", 2)[2])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Некорректный идентификатор файла", show_alert=True)
+        return
     data = await state.get_data()
     files = data.get("lotus_scan_files", [])
     ctx = data.get("lotus_pc_ctx", {})
@@ -394,7 +398,11 @@ async def pick_lotus_file(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("lotus:pull_ren:"))
 async def pull_lotus_renamed(callback: CallbackQuery, state: FSMContext):
-    idx = int(callback.data.split(":", 2)[2])
+    try:
+        idx = int(callback.data.split(":", 2)[2])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Некорректный идентификатор файла", show_alert=True)
+        return
     data = await state.get_data()
     files = data.get("lotus_scan_files", [])
     ctx = data.get("lotus_pc_ctx", {})
@@ -409,7 +417,11 @@ async def pull_lotus_renamed(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("lotus:pull_ovw:"))
 async def pull_lotus_overwrite(callback: CallbackQuery, state: FSMContext):
-    idx = int(callback.data.split(":", 2)[2])
+    try:
+        idx = int(callback.data.split(":", 2)[2])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Некорректный идентификатор файла", show_alert=True)
+        return
     data = await state.get_data()
     files = data.get("lotus_scan_files", [])
     if idx < 0 or idx >= len(files):
@@ -494,7 +506,11 @@ async def _do_restore_lotus(callback: CallbackQuery, transfer_id: int):
 
 @router.callback_query(F.data.startswith("lotus:ret:"))
 async def restore_lotus_id(callback: CallbackQuery):
-    transfer_id = int(callback.data.split(":", 2)[2])
+    try:
+        transfer_id = int(callback.data.split(":", 2)[2])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Некорректный ID переноса", show_alert=True)
+        return
     t = await asyncio.to_thread(get_lotus_transfer_by_id, transfer_id)
     if not t:
         await callback.answer("❌ Запись переноса не найдена", show_alert=True)
@@ -505,7 +521,11 @@ async def restore_lotus_id(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("lotus:killnotes:"))
 async def kill_notes_and_restore(callback: CallbackQuery):
-    transfer_id = int(callback.data.split(":", 2)[2])
+    try:
+        transfer_id = int(callback.data.split(":", 2)[2])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Некорректный ID переноса", show_alert=True)
+        return
     t = await asyncio.to_thread(get_lotus_transfer_by_id, transfer_id)
     if not t:
         await callback.answer("❌ Запись переноса не найдена", show_alert=True)
@@ -543,7 +563,11 @@ async def kill_notes_and_restore(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("lotus:del:"))
 async def delete_lotus_storage_copy(callback: CallbackQuery, state: FSMContext):
-    transfer_id = int(callback.data.split(":", 2)[2])
+    try:
+        transfer_id = int(callback.data.split(":", 2)[2])
+    except (ValueError, IndexError):
+        await callback.answer("❌ Некорректный ID переноса", show_alert=True)
+        return
     t = await asyncio.to_thread(get_lotus_transfer_by_id, transfer_id)
     res = await asyncio.to_thread(lotus_service.delete_storage_copy, transfer_id)
     if res.get("ok"):

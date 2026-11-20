@@ -505,6 +505,7 @@ class CoreServicesAndHandlersTests(unittest.TestCase):
         import hashlib
         import hmac
         import json
+        import time
         from urllib.parse import urlencode
         from webapp import server
 
@@ -514,9 +515,9 @@ class CoreServicesAndHandlersTests(unittest.TestCase):
         with patch.object(config, "BOT_TOKEN", bot_token), \
              patch.object(config, "ADMIN_IDS", [admin_id]), \
              patch.object(config, "WEBAPP_API_TOKEN", "my_super_api_secret"):
-            # 1. Valid Telegram Init Data for Admin
+            # 1. Valid Telegram Init Data for Admin (fresh auth_date)
             user_json = json.dumps({"id": admin_id, "first_name": "Admin"})
-            params = {"auth_date": "1700000000", "query_id": "AAHdF6IQAAAAAN0XohDhrOrc", "user": user_json}
+            params = {"auth_date": str(int(time.time())), "query_id": "AAHdF6IQAAAAAN0XohDhrOrc", "user": user_json}
             check_str = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
             secret_key = hmac.new(b"WebAppData", bot_token.encode("utf-8"), hashlib.sha256).digest()
             valid_hash = hmac.new(secret_key, check_str.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -526,6 +527,12 @@ class CoreServicesAndHandlersTests(unittest.TestCase):
             verified = server.verify_telegram_init_data(init_data_str)
             self.assertIsNotNone(verified)
             self.assertEqual(verified["id"], admin_id)
+
+            # 1b. Expired auth_date -> rejected
+            expired_params = {"auth_date": "1700000000", "query_id": "AAHdF6IQAAAAAN0XohDhrOrc", "user": user_json}
+            exp_check = "\n".join(f"{k}={v}" for k, v in sorted(expired_params.items()))
+            expired_params["hash"] = hmac.new(secret_key, exp_check.encode("utf-8"), hashlib.sha256).hexdigest()
+            self.assertIsNone(server.verify_telegram_init_data(urlencode(expired_params)))
 
             # 2. Tampered hash -> rejected
             params["hash"] = "0" * 64

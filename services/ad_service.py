@@ -5,6 +5,7 @@ import struct
 import threading
 import ldap3
 from ldap3.utils.conv import escape_filter_chars
+from ldap3.utils.dn import escape_rdn, parse_dn
 
 import config
 from services.logger_service import get_logger
@@ -12,7 +13,7 @@ from services.logger_service import get_logger
 TZ_LOCAL = datetime.timezone(datetime.timedelta(hours=5))
 
 
-# --- ЧИСТАЯ РЕАЛИЗАЦИЯ MD4 ДЛЯ PYTHON 3.14+ ---
+# --- ЧИСТАЯ РЕАЛИЗАЦИЯ MD4 (RFC 1320) ДЛЯ PYTHON 3.14+ ---
 class PureMD4:
     def __init__(self, data=b''):
         self.buf = bytearray()
@@ -23,7 +24,7 @@ class PureMD4:
         self.buf.extend(data)
 
     def digest(self):
-        msg = self.buf
+        msg = bytearray(self.buf)
         orig_len_in_bits = (len(msg) * 8) & 0xffffffffffffffff
         msg.append(0x80)
         while len(msg) % 64 != 56:
@@ -38,39 +39,30 @@ class PureMD4:
 
         def lrot(val, n): return ((val << n) & 0xffffffff) | (val >> (32 - n))
 
-        for i in range(0, len(msg), 64):
-            X = list(struct.unpack('<16I', msg[i:i+64]))
+        for offset in range(0, len(msg), 64):
+            X = struct.unpack('<16I', msg[offset:offset + 64])
             a, b, c, d = A, B, C, D
 
-            # Round 1
-            for s, k in zip([3, 7, 11, 19]*4, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]):
-                a = lrot((a + F(b, c, d) + X[k]) & 0xffffffff, s)
-            for s, k in zip([3, 7, 11, 19]*4, [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]):
-                d = lrot((d + F(a, b, c) + X[k]) & 0xffffffff, s)
-            for s, k in zip([3, 7, 11, 19]*4, [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15]):
-                c = lrot((c + F(d, a, b) + X[k]) & 0xffffffff, s)
-            for s, k in zip([3, 7, 11, 19]*4, [0, 12, 1, 13, 2, 14, 3, 15, 4, 8, 5, 9, 6, 10, 7, 11]):
-                b = lrot((b + F(c, d, a) + X[k]) & 0xffffffff, s)
+            # Round 1 (RFC 1320: чередование a -> d -> c -> b)
+            for i in (0, 4, 8, 12):
+                a = lrot((a + F(b, c, d) + X[i]) & 0xffffffff, 3)
+                d = lrot((d + F(a, b, c) + X[i + 1]) & 0xffffffff, 7)
+                c = lrot((c + F(d, a, b) + X[i + 2]) & 0xffffffff, 11)
+                b = lrot((b + F(c, d, a) + X[i + 3]) & 0xffffffff, 19)
 
             # Round 2
-            for s, k in zip([3, 5, 9, 13]*4, [0, 4, 8, 12, 1, 5, 9, 13, 2, 6, 10, 14, 3, 7, 11, 15]):
-                a = lrot((a + G(b, c, d) + X[k] + 0x5a827999) & 0xffffffff, s)
-            for s, k in zip([3, 5, 9, 13]*4, [0, 8, 1, 9, 2, 10, 3, 11, 4, 12, 5, 13, 6, 14, 7, 15]):
-                d = lrot((d + G(a, b, c) + X[k] + 0x5a827999) & 0xffffffff, s)
-            for s, k in zip([3, 5, 9, 13]*4, [0, 12, 1, 13, 2, 14, 3, 15, 4, 8, 5, 9, 6, 10, 7, 11]):
-                c = lrot((c + G(d, a, b) + X[k] + 0x5a827999) & 0xffffffff, s)
-            for s, k in zip([3, 5, 9, 13]*4, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]):
-                b = lrot((b + G(c, d, a) + X[k] + 0x5a827999) & 0xffffffff, s)
+            for i in (0, 1, 2, 3):
+                a = lrot((a + G(b, c, d) + X[i] + 0x5a827999) & 0xffffffff, 3)
+                d = lrot((d + G(a, b, c) + X[i + 4] + 0x5a827999) & 0xffffffff, 5)
+                c = lrot((c + G(d, a, b) + X[i + 8] + 0x5a827999) & 0xffffffff, 9)
+                b = lrot((b + G(c, d, a) + X[i + 12] + 0x5a827999) & 0xffffffff, 13)
 
             # Round 3
-            for s, k in zip([3, 9, 11, 15]*4, [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]):
-                a = lrot((a + H(b, c, d) + X[k] + 0x6ed9eba1) & 0xffffffff, s)
-            for s, k in zip([3, 9, 11, 15]*4, [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]):
-                d = lrot((d + H(a, b, c) + X[k] + 0x6ed9eba1) & 0xffffffff, s)
-            for s, k in zip([3, 9, 11, 15]*4, [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]):
-                c = lrot((c + H(d, a, b) + X[k] + 0x6ed9eba1) & 0xffffffff, s)
-            for s, k in zip([3, 9, 11, 15]*4, [0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15]):
-                b = lrot((b + H(c, d, a) + X[k] + 0x6ed9eba1) & 0xffffffff, s)
+            for i in (0, 2, 1, 3):
+                a = lrot((a + H(b, c, d) + X[i] + 0x6ed9eba1) & 0xffffffff, 3)
+                d = lrot((d + H(a, b, c) + X[i + 8] + 0x6ed9eba1) & 0xffffffff, 9)
+                c = lrot((c + H(d, a, b) + X[i + 4] + 0x6ed9eba1) & 0xffffffff, 11)
+                b = lrot((b + H(c, d, a) + X[i + 12] + 0x6ed9eba1) & 0xffffffff, 15)
 
             A = (A + a) & 0xffffffff
             B = (B + b) & 0xffffffff
@@ -86,10 +78,10 @@ class PureMD4:
 _original_hash_new = hashlib.new
 
 
-def _patched_hash_new(name, string=b'', *args, **kwargs):
+def _patched_hash_new(name, data=b'', *args, **kwargs):
     if name.lower() == 'md4':
-        return PureMD4(string)
-    return _original_hash_new(name, string, *args, **kwargs)
+        return PureMD4(data)
+    return _original_hash_new(name, data, *args, **kwargs)
 
 
 hashlib.new = _patched_hash_new
@@ -128,9 +120,14 @@ def _fmt_local_dt(val, date_only: bool = False) -> str:
 
 
 def _extract_cn(dn: str) -> str:
-    for part in str(dn).split(","):
-        if part.upper().startswith("CN="):
-            return part[3:]
+    try:
+        for attr, val, _ in parse_dn(str(dn)):
+            if attr.upper() == "CN":
+                return val
+    except Exception:
+        for part in str(dn).split(","):
+            if part.upper().startswith("CN="):
+                return part[3:]
     return str(dn)
 
 
@@ -165,25 +162,37 @@ class ActiveDirectoryService:
 
                 server_host = self.server_uri.replace("ldap://", "").replace("ldaps://", "")
                 tls_req = ldap3.Tls(validate=ssl.CERT_NONE)
-                server = ldap3.Server(server_host, port=389, use_ssl=False, tls=tls_req, get_info=ldap3.ALL)
-
-                user_ntlm = self.user
-                if "@" in user_ntlm:
-                    user_ntlm = f"{self.domain.split('.')[0].upper()}\\{user_ntlm.split('@')[0]}"
-                elif "\\" not in user_ntlm:
-                    user_ntlm = f"{self.domain.split('.')[0].upper()}\\{user_ntlm}"
-
-                # 1. Сначала пробуем NTLM
-                self.conn = ldap3.Connection(
-                    server,
-                    user=user_ntlm,
-                    password=self.password,
-                    authentication=ldap3.NTLM,
-                    auto_bind=False,
+                server = ldap3.Server(
+                    server_host,
+                    port=389,
+                    use_ssl=False,
+                    tls=tls_req,
+                    get_info=ldap3.ALL,
+                    connect_timeout=8,
                 )
 
-                if not self.conn.bind():
-                    logger.warning(f"NTLM bind не прошел ({self.conn.result.get('description')}). Пробуем StartTLS + SIMPLE...")
+                # Если AD_USER в формате UPN (user@domain), сразу используем StartTLS + SIMPLE
+                use_simple_direct = "@" in self.user
+                bound_ok = False
+
+                if not use_simple_direct:
+                    user_ntlm = self.user
+                    if "\\" not in user_ntlm:
+                        user_ntlm = f"{self.domain.split('.')[0].upper()}\\{user_ntlm}"
+
+                    self.conn = ldap3.Connection(
+                        server,
+                        user=user_ntlm,
+                        password=self.password,
+                        authentication=ldap3.NTLM,
+                        auto_bind=False,
+                        receive_timeout=20,
+                    )
+                    bound_ok = bool(self.conn.bind())
+                    if not bound_ok:
+                        logger.warning(f"NTLM bind не прошел ({self.conn.result.get('description')}). Пробуем StartTLS + SIMPLE...")
+
+                if not bound_ok:
                     username = self.user.split("\\")[-1] if "\\" in self.user else self.user
                     bind_user = f"{username}@{self.domain}" if "@" not in username else username
 
@@ -193,12 +202,20 @@ class ActiveDirectoryService:
                         password=self.password,
                         authentication=ldap3.SIMPLE,
                         auto_bind=False,
+                        receive_timeout=20,
                     )
 
                     try:
-                        self.conn.start_tls()
+                        tls_ok = self.conn.start_tls()
                     except Exception as tls_err:
-                        logger.error(f"Ошибка активации StartTLS: {tls_err}")
+                        logger.error(f"Ошибка активации StartTLS (откат на cleartext запрещен): {tls_err}")
+                        self.conn = None
+                        return
+
+                    if not tls_ok:
+                        logger.error("StartTLS не активирован (откат на cleartext SIMPLE bind запрещен).")
+                        self.conn = None
+                        return
 
                     if not self.conn.bind():
                         logger.error(f"StartTLS + SIMPLE bind также отклонен: {self.conn.result}")
@@ -354,7 +371,7 @@ class ActiveDirectoryService:
             'telephoneNumber', 'mobile', 'manager', 'company', 'whenCreated',
             'pwdLastSet', 'lastLogonTimestamp', 'badPwdCount', 'lockoutTime',
             'userAccountControl', 'distinguishedName', 'physicalDeliveryOfficeName',
-            'scriptPath', 'logonWorkstation', 'memberOf'
+            'scriptPath', 'logonWorkstation', 'memberOf', 'adminCount'
         ]
 
         with self._lock:
@@ -427,16 +444,24 @@ class ActiveDirectoryService:
                 "uac": uac,
                 "is_disabled": is_disabled,
                 "is_locked": is_locked,
+                "admin_count": int(entry.adminCount.value) if hasattr(entry, 'adminCount') and entry.adminCount else 0,
                 "dn": str(entry.entry_dn),
             }
 
-    def reset_password(self, username: str, new_password: str, must_change: bool = True) -> bool:
+    def reset_password(self, username: str, new_password: str, must_change: bool = True, enforce_protected: bool = False) -> bool:
         """Сброс пароля пользователя в AD с опцией смены при следующем входе (pwdLastSet=0)."""
         with self._lock:
             details = self.get_user_details(username)
             if not details:
                 logger.error(f"Пользователь {username} не найден для сброса пароля.")
                 return False
+
+            if enforce_protected:
+                is_admin_count = int(details.get("admin_count", 0) or 0) == 1
+                in_protected = any(g.lower() in config.PROTECTED_AD_GROUPS for g in details.get("groups", []))
+                if is_admin_count or in_protected:
+                    logger.warning(f"Сброс пароля для защищенной УЗ {username} заблокирован политикой безопасности.")
+                    return False
 
             user_dn = details["dn"]
             password_quoted = f'"{new_password}"'
@@ -561,7 +586,8 @@ class ActiveDirectoryService:
             if not self.conn:
                 return False
             try:
-                rdn = user_dn.split(',')[0]
+                dn_parts = parse_dn(user_dn)
+                rdn = f"{dn_parts[0][0]}={escape_rdn(dn_parts[0][1])}" if dn_parts else user_dn.split(',')[0]
                 res = self.conn.modify_dn(
                     dn=user_dn,
                     relative_dn=rdn,
@@ -636,7 +662,7 @@ class ActiveDirectoryService:
             if not details:
                 return False
             try:
-                rdn = f"CN={pc_name}"
+                rdn = f"CN={escape_rdn(pc_name)}"
                 return bool(self.conn.modify_dn(dn=details["dn"], relative_dn=rdn, delete_old_dn=True, new_superior=target_ou_dn))
             except Exception as e:
                 logger.error(f"Ошибка перемещения ПК: {e}")

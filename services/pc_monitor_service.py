@@ -104,13 +104,9 @@ def _run_winrm_ps(target_pc: str, ps_script: str, timeout: int = 8) -> tuple[boo
 
 def _exec_remote_ps(target_pc: str, ps_script: str, timeout: int = 10) -> tuple[bool, str, str | None]:
     """
-    Универсальное выполнение PowerShell:
-    - На Linux: всегда через WinRM (pypsrp)
-    - На Windows: локальный PowerShell (если не задан отдельный PC_ADMIN_USER), либо fallback на WinRM
+    Выполнение PowerShell на удаленном ПК через WinRM (pypsrp).
+    Локальный run_ps_cmd запрещен, чтобы при отсутствии PC_ADMIN_USER команды не выполнялись на хосте бота.
     """
-    if _is_windows() and not os.getenv("PC_ADMIN_USER"):
-        out = run_ps_cmd(ps_script, timeout=timeout)
-        return bool(out), out, None if out else "error"
     return _run_winrm_ps(target_pc, ps_script, timeout=timeout)
 
 
@@ -602,12 +598,13 @@ def kill_remote_processes(
 
 
 def run_gpupdate_remote(pc_name: str, dns_name: str = "") -> tuple[bool, str]:
-    """Удаленно запускает обновление групповых политик (gpupdate /force) на ПК через pypsrp."""
+    """Удаленно запускает обновление групповых политик (gpupdate /force /wait:0) на ПК через pypsrp."""
     target = _resolve_target(pc_name, dns_name)
-    script = 'cmd /c "echo N | gpupdate /force"'
-    ok, output, err_code = _run_winrm_ps(target, script, timeout=20)
-    if ok:
-        return True, (output or "ok").strip()
+    script = 'cmd /c "echo N | gpupdate /force /wait:0"; Write-Output "__GPUPDATE_OK__"'
+    ok, output, err_code = _run_winrm_ps(target, script, timeout=25)
+    if ok and "__GPUPDATE_OK__" in (output or ""):
+        clean = (output or "").replace("__GPUPDATE_OK__", "").strip()
+        return True, clean or "ok"
     return False, err_code or "error"
 
 

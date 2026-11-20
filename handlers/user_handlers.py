@@ -284,13 +284,6 @@ async def paginate_user_search(callback: CallbackQuery, state: FSMContext):
     await edit_rich(callback.message, _render_user_search_page(users, page))
 
 
-@router.callback_query(F.data.startswith("user_select_"))
-async def select_user_from_list(callback: CallbackQuery):
-    username = callback.data.removeprefix("user_select_")
-    await callback.answer()
-    await show_user_profile(callback.message, username, edit=True)
-
-
 async def _render_user_pc_lookup(callback: CallbackQuery, username: str, force_scan: bool = False):
     loading_card = render_bubble_card(
         title="💻 Поиск рабочего места...",
@@ -432,6 +425,7 @@ async def handle_user_action(callback: CallbackQuery, state: FSMContext):
         return
 
     if action == "show":
+        await state.clear()
         await callback.answer()
         await show_user_profile(callback.message, username, edit=True)
         return
@@ -497,68 +491,6 @@ async def handle_user_action(callback: CallbackQuery, state: FSMContext):
             title="🔓 Разблокировка аккаунта",
             badge=badge,
             body_lines=[f"Пользователь: <code>{html_text(username)}</code>", result_str],
-            buttons=[
-                button_row(
-                    callback_button("👤 К карточке", f"user:show:{username}", "link"),
-                    callback_button("🏠 Главное меню", "home:main", "link"),
-                )
-            ],
-        )
-        await edit_rich(callback.message, card)
-        return
-
-    if action == "toggle_ask":
-        await callback.answer()
-        details = await asyncio.to_thread(ad_service.get_user_details, username)
-        if not details:
-            await edit_rich(
-                callback.message,
-                render_bubble_card(title="❌ Ошибка", body_lines=[f"Пользователь <code>{html_text(username)}</code> не найден."]),
-            )
-            return
-        currently_disabled = bool(details.get("is_disabled"))
-        action_word = "ВКЛЮЧИТЬ" if currently_disabled else "ОТКЛЮЧИТЬ (Disable)"
-        btn_label = "🟢 Да, включить УЗ" if currently_disabled else "⛔ Да, отключить УЗ"
-        btn_style = "success" if currently_disabled else "danger"
-
-        card = render_bubble_card(
-            title="⚙️ Изменение статуса УЗ",
-            badge="Подтверждение",
-            body_lines=[
-                f"Вы действительно хотите <b>{action_word}</b> учетную запись сотрудника:",
-                f"<b>{html_text(details['display_name'])}</b> (<code>{html_text(username)}</code>)?",
-            ],
-            buttons=[
-                button_row(callback_button(btn_label, f"user:toggle_do:{username}", btn_style)),
-                button_row(callback_button("❌ Отмена", f"user:show:{username}", "link")),
-            ],
-        )
-        await edit_rich(callback.message, card)
-        return
-
-    if action == "toggle_do":
-        await callback.answer()
-        details = await asyncio.to_thread(ad_service.get_user_details, username)
-        if not details:
-            await edit_rich(
-                callback.message,
-                render_bubble_card(title="❌ Ошибка", body_lines=[f"Пользователь <code>{html_text(username)}</code> не найден."]),
-            )
-            return
-        target_enabled = bool(details.get("is_disabled"))
-        ok = await asyncio.to_thread(ad_service.set_user_enabled, username, target_enabled)
-        act_name = "Включение УЗ" if target_enabled else "Отключение УЗ"
-        await send_audit_log(callback.bot, callback.from_user, act_name, username, status=ok)
-
-        res_msg = (
-            f"Учетная запись <code>{html_text(username)}</code> успешно <b>{'включена' if target_enabled else 'отключена'}</b>."
-            if ok
-            else f"Не удалось изменить статус учетной записи <code>{html_text(username)}</code>."
-        )
-        card = render_bubble_card(
-            title=f"⚙️ {act_name}",
-            badge="Успешно" if ok else "Ошибка",
-            body_lines=[res_msg],
             buttons=[
                 button_row(
                     callback_button("👤 К карточке", f"user:show:{username}", "link"),
@@ -787,7 +719,7 @@ async def handle_password_reset_choice(callback: CallbackQuery):
     await callback.answer()
 
     new_password = _generate_strong_password(12) if mode == "rand" else "ASDfg123+"
-    success = await asyncio.to_thread(ad_service.reset_password, username, new_password, True)
+    success = await asyncio.to_thread(ad_service.reset_password, username, new_password, True, True)
     await send_audit_log(callback.bot, callback.from_user, f"Сброс пароля ({mode})", username, status=success)
 
     if success:
@@ -897,6 +829,7 @@ async def handle_user_groups(callback: CallbackQuery, state: FSMContext):
     arg = parts[2] if len(parts) > 2 else ""
 
     if sub == "view":
+        await state.clear()
         await callback.answer()
         await _render_user_groups_panel(callback, arg, state, page=0)
         return

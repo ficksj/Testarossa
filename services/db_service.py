@@ -13,17 +13,16 @@ DB_PATH = _shared_db.strip() if _shared_db.strip() else os.path.join(BASE_DIR, "
 
 @contextmanager
 def _get_conn(db_path: str | None = None):
-    """Открывает SQLite-соединение с WAL/busy_timeout и гарантированно закрывает его при выходе из контекста."""
+    """Открывает SQLite-соединение с busy_timeout и гарантированно закрывает его при выходе из контекста."""
     target_path = db_path or DB_PATH
     parent_dir = os.path.dirname(os.path.abspath(target_path))
     if parent_dir:
         os.makedirs(parent_dir, exist_ok=True)
     conn = sqlite3.connect(target_path, timeout=15.0)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
-    conn.execute("PRAGMA busy_timeout=15000;")
     try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA busy_timeout=15000;")
         yield conn
     except Exception:
         conn.rollback()
@@ -102,8 +101,26 @@ def init_db(db_path: str | None = None):
                 ON lotus_id_transfers (pc_name, status)
             """)
 
+            # Единая таблица аудита действий администраторов (совместима с Tauria)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS audit_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    admin_id INTEGER NOT NULL,
+                    admin_username TEXT,
+                    action TEXT NOT NULL,
+                    target TEXT,
+                    status TEXT NOT NULL,
+                    details TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp
+                ON audit_logs (timestamp)
+            """)
+
             conn.commit()
-        logger.info("База данных успешно инициализирована (WAL, сессии, OU, настройки, Lotus ID)")
+        logger.info("База данных успешно инициализирована (WAL, сессии, OU, настройки, Lotus ID, audit_logs)")
     except Exception as e:
         logger.error(f"Ошибка инициализации БД: {e}")
 
@@ -160,13 +177,13 @@ def get_pc_user_session(pc_name: str) -> dict | None:
     """Получение сохраненного пользователя ПК из БД (обратный поиск по имени ПК)."""
     if not pc_name:
         return None
-    pc_clean = pc_name.strip()
+    pc_clean = pc_name.strip().upper()
     try:
         with _get_conn() as conn:
             row = conn.execute("""
                 SELECT username, dns_name, updated_at
                 FROM user_pc_sessions
-                WHERE UPPER(pc_name) = UPPER(?) OR UPPER(dns_name) LIKE UPPER(?)
+                WHERE pc_name = ? OR UPPER(dns_name) LIKE ?
                 ORDER BY updated_at DESC
                 LIMIT 1
             """, (pc_clean, f"{pc_clean}.%")).fetchone()
@@ -331,7 +348,7 @@ def save_lotus_transfer(
             conn.execute("""
                 UPDATE lotus_id_transfers
                 SET status = 'superseded'
-                WHERE UPPER(pc_name) = ? AND LOWER(win_profile) = LOWER(?)
+                WHERE pc_name = ? AND LOWER(win_profile) = LOWER(?)
                   AND LOWER(original_filename) = LOWER(?) AND status = 'extracted'
             """, (pc_clean, win_profile, original_filename))
 
@@ -374,7 +391,7 @@ def get_active_lotus_transfers_by_pc(pc_name: str) -> list[dict]:
         with _get_conn() as conn:
             rows = conn.execute("""
                 SELECT * FROM lotus_id_transfers
-                WHERE UPPER(pc_name) = ? AND status = 'extracted'
+                WHERE pc_name = ? AND status = 'extracted'
                 ORDER BY extracted_at DESC
             """, (pc_clean,)).fetchall()
         return [dict(r) for r in rows]
@@ -390,7 +407,7 @@ def get_latest_lotus_transfer_by_pc(pc_name: str) -> dict | None:
         with _get_conn() as conn:
             row = conn.execute("""
                 SELECT * FROM lotus_id_transfers
-                WHERE UPPER(pc_name) = ? AND status IN ('extracted', 'returned')
+                WHERE pc_name = ? AND status IN ('extracted', 'returned')
                 ORDER BY extracted_at DESC
                 LIMIT 1
             """, (pc_clean,)).fetchone()
@@ -427,6 +444,38 @@ def mark_lotus_returned(transfer_id: int):
             conn.commit()
     except Exception as e:
         logger.error(f"Ошибка обновления статуса Lotus ID #{transfer_id}: {e}")
+
+
+def delete_lotus_transfer(transfer_id: int):
+    """Удаляет запись о переносе Lotus ID из БД."""
+    try:
+        with _get_conn() as conn:
+            conn.execute("DELETE FROM lotus_id_transfers WHERE id = ?", (transfer_id,))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка удаления записи Lotus ID #{transfer_id}: {e}")
+
+
+# --- Аудит действий администраторов ---
+
+def log_audit_action(
+    admin_id: int,
+    admin_username: str | None,
+    action: str,
+    target: str | None,
+    status: str,
+    details: str | None = None,
+):
+    """Записывает действие администратора в единую таблицу audit_logs."""
+    try:
+        with _get_conn() as conn:
+            conn.execute("""
+                INSERT INTO audit_logs (admin_id, admin_username, action, target, status, details)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (int(admin_id), admin_username, str(action), target, str(status), details))
+            conn.commit()
+    except Exception as e:
+        logger.error(f"Ошибка записи в audit_logs: {e}")
 
 
 # Инициализируем БД при импорте

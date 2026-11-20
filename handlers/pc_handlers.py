@@ -15,8 +15,6 @@ from services.pc_monitor_service import (
     check_pc_online,
     get_pc_diagnostics,
     get_pc_logged_user_detailed,
-    logoff_remote_session,
-    reboot_remote_pc_detailed,
     run_gpupdate_remote,
 )
 from services.rich_message_service import (
@@ -347,7 +345,6 @@ async def handle_pc_action(callback: CallbackQuery, state: FSMContext):
                     callback_button("🔄 Обновить", f"pc:diag:{value}", "link"),
                 ),
                 button_row(
-                    callback_button("🔄 Перезагрузить ПК", f"pc:reboot_confirm:{value}", "danger"),
                     callback_button("💻 К карточке ПК", f"pc:show:{value}", "link"),
                 ),
             ],
@@ -419,22 +416,6 @@ async def handle_pc_action(callback: CallbackQuery, state: FSMContext):
         await edit_rich(callback.message, card)
         return
 
-    if action == "reboot_confirm":
-        card = render_bubble_card(
-            title="🔄 Подтверждение перезагрузки",
-            badge="Внимание",
-            body_lines=[
-                f"Вы уверены, что хотите принудительно перезагрузить компьютер <code>{html_text(value)}</code>?",
-                "Все несохраненные данные пользователя на машине будут закрыты.",
-            ],
-            buttons=[
-                button_row(callback_button("⚠️ Да, перезагрузить", f"pc:reboot_do:{value}", "danger")),
-                button_row(callback_button("❌ Отмена", f"pc:show:{value}", "link")),
-            ],
-        )
-        await edit_rich(callback.message, card)
-        return
-
     if action == "gpupdate":
         await edit_rich(
             callback.message,
@@ -444,7 +425,10 @@ async def handle_pc_action(callback: CallbackQuery, state: FSMContext):
                 body_lines=[f"⏳ Запуск <code>gpupdate /force</code> на <code>{html_text(value)}</code>..."],
             ),
         )
-        success, result = await asyncio.to_thread(run_gpupdate_remote, value)
+        details = await asyncio.to_thread(ad_service.get_computer_details, value)
+        dns_raw = details.get("dns_name", "") if details else ""
+        dns_name = dns_raw if dns_raw and dns_raw != "—" else value
+        success, result = await asyncio.to_thread(run_gpupdate_remote, value, dns_name)
         await send_audit_log(callback.bot, callback.from_user, "Удаленный gpupdate /force", value, status=success)
 
         if not success and result == "auth_denied":
@@ -463,97 +447,6 @@ async def handle_pc_action(callback: CallbackQuery, state: FSMContext):
             body_lines=[res_text],
             buttons=[
                 button_row(callback_button("💻 К карточке ПК", f"pc:show:{value}", "link")),
-            ],
-        )
-        await edit_rich(callback.message, card)
-        return
-
-    if action == "logoff_ask":
-        card = render_bubble_card(
-            title="🚪 Завершение сеансов",
-            badge="Внимание",
-            body_lines=[
-                f"Вы уверены, что хотите завершить пользовательские сеансы на <code>{html_text(value)}</code>?",
-                "Все несохраненные данные в активных сеансах будут потеряны.",
-            ],
-            buttons=[
-                button_row(callback_button("⚠️ Да, завершить сеансы", f"pc:logoff_confirm:{value}", "danger")),
-                button_row(callback_button("❌ Отмена", f"pc:show:{value}", "link")),
-            ],
-        )
-        await edit_rich(callback.message, card)
-        return
-
-    if action == "logoff_confirm":
-        await edit_rich(
-            callback.message,
-            render_bubble_card(
-                title="🚪 Завершение сеансов",
-                badge="Выполнение",
-                body_lines=[f"⏳ Завершение сеансов на <code>{html_text(value)}</code>..."],
-            ),
-        )
-        success, result = await asyncio.to_thread(logoff_remote_session, value)
-        await send_audit_log(callback.bot, callback.from_user, "Удаленный logoff сеанса", value, status=success)
-
-        if not success and result == "auth_denied":
-            await edit_rich(callback.message, _auth_denied_card(value, f"pc:show:{value}"))
-            return
-
-        badge = "Выполнено" if success else "Ошибка"
-        if success and result == "no_sessions":
-            res_text = f"На <code>{html_text(value)}</code> нет активных пользовательских сеансов."
-        elif success:
-            res_text = f"Пользовательские сеансы на <code>{html_text(value)}</code> завершены."
-        else:
-            res_text = f"Не удалось завершить сеансы на <code>{html_text(value)}</code> ({html_text(result)})."
-
-        card = render_bubble_card(
-            title="🚪 Результат завершения сеансов",
-            badge=badge,
-            body_lines=[res_text],
-            buttons=[
-                button_row(callback_button("💻 К карточке ПК", f"pc:show:{value}", "link")),
-            ],
-        )
-        await edit_rich(callback.message, card)
-        return
-
-    if action == "reboot_do":
-        await edit_rich(
-            callback.message,
-            render_bubble_card(
-                title="🔄 Перезагрузка ПК",
-                badge="Выполнение",
-                body_lines=[f"⏳ Отправка команды перезагрузки на <code>{html_text(value)}</code>..."],
-            ),
-        )
-        details = await asyncio.to_thread(ad_service.get_computer_details, value)
-        dns_raw = details.get("dns_name", "") if details else ""
-        dns_name = dns_raw if dns_raw and dns_raw != "—" else value
-        success, err_code = await asyncio.to_thread(reboot_remote_pc_detailed, value, dns_name)
-        await send_audit_log(callback.bot, callback.from_user, "Удаленная перезагрузка ПК", value, status=success)
-
-        if not success and err_code == "auth_denied":
-            await edit_rich(callback.message, _auth_denied_card(value, f"pc:show:{value}"))
-            return
-
-        badge = "Выполнено" if success else "Ошибка"
-        res_text = (
-            f"Команда перезагрузки успешно доставлена на <code>{html_text(value)}</code>."
-            if success
-            else f"Не удалось перезагрузить <code>{html_text(value)}</code> (ПК оффлайн или недоступен WinRM)."
-        )
-
-        card = render_bubble_card(
-            title="🔄 Результат перезагрузки",
-            badge=badge,
-            body_lines=[res_text],
-            buttons=[
-                button_row(
-                    callback_button("💻 К карточке ПК", f"pc:show:{value}", "link"),
-                    callback_button("🏠 Главное меню", "home:main", "link"),
-                )
             ],
         )
         await edit_rich(callback.message, card)
